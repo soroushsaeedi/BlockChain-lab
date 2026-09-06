@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
+"""Builds Notes 01 as a paginated, book-style PDF.
+
+Layout rules: title page, contents page, then one section per page.
+Reuse this script as the template for later notes in the series.
+"""
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph, KeepTogether,
-                                Spacer, Table, TableStyle)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph,
+                                Spacer, Table, TableStyle, PageBreak, KeepTogether)
 
-OUT = r"E:/Personal Project/BlockChain Network/notes/01-mining-and-the-block-header.pdf"
+OUT = (r"E:/Personal Project/BlockChain Network/rust miner/notes"
+       r"/01-mining-and-the-block-header.pdf")
+
+TITLE = "Mining and the Block Header"
+SERIES = "Rust Miner \u00b7 Notes 01"
+DATE = "6 September 2026"
 
 INK    = colors.HexColor("#1a1a1a")
 MUTED  = colors.HexColor("#6b6b6b")
@@ -24,32 +34,35 @@ def S(name, **kw):
     return ParagraphStyle(name, parent=base, **kw)
 
 
-TitleS = S("TitleS", fontName="Helvetica-Bold", fontSize=23, leading=27,
-           textColor=INK, spaceAfter=2)
-SubTitleS = S("SubTitleS", fontName="Helvetica", fontSize=10.5, leading=14,
-              textColor=MUTED, spaceAfter=0)
-H1 = S("H1", fontName="Helvetica-Bold", fontSize=13.5, leading=17, textColor=INK,
-       spaceBefore=17, spaceAfter=6)
-H2 = S("H2", fontName="Helvetica-Bold", fontSize=10.8, leading=14, textColor=ACCENT,
-       spaceBefore=11, spaceAfter=4)
-Body = S("Body", fontName="Helvetica", fontSize=9.7, leading=14.2, textColor=INK,
-         spaceAfter=6, alignment=TA_LEFT)
-Small = S("Small", fontName="Helvetica", fontSize=8.6, leading=12, textColor=MUTED,
+BigTitle  = S("BigTitle", fontName="Helvetica-Bold", fontSize=30, leading=35,
+              textColor=INK, alignment=TA_CENTER, spaceAfter=0)
+BigSub    = S("BigSub", fontName="Helvetica", fontSize=12, leading=17,
+              textColor=MUTED, alignment=TA_CENTER)
+CoverMeta = S("CoverMeta", fontName="Helvetica", fontSize=9.5, leading=14,
+              textColor=MUTED, alignment=TA_CENTER)
+H1 = S("H1", fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=INK,
+       spaceBefore=0, spaceAfter=10)
+H2 = S("H2", fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=ACCENT,
+       spaceBefore=13, spaceAfter=4)
+Body = S("Body", fontName="Helvetica", fontSize=10, leading=15, textColor=INK,
+         spaceAfter=8, alignment=TA_LEFT)
+Small = S("Small", fontName="Helvetica", fontSize=8.8, leading=12.5, textColor=MUTED,
           spaceAfter=4)
-Code = S("Code", fontName="Courier", fontSize=8.6, leading=12.4, textColor=INK,
+Code = S("Code", fontName="Courier", fontSize=8.8, leading=12.8, textColor=INK,
          spaceAfter=0, spaceBefore=0)
-CellB = S("CellB", fontName="Helvetica", fontSize=8.5, leading=11.6, textColor=INK)
-CellH = S("CellH", fontName="Helvetica-Bold", fontSize=8.5, leading=11.6, textColor=INK)
-Note = S("Note", fontName="Helvetica", fontSize=9.2, leading=13.4, textColor=INK,
+CellB = S("CellB", fontName="Helvetica", fontSize=8.7, leading=12, textColor=INK)
+CellH = S("CellH", fontName="Helvetica-Bold", fontSize=8.7, leading=12, textColor=INK)
+Note = S("Note", fontName="Helvetica", fontSize=9.4, leading=13.8, textColor=INK,
          spaceAfter=0)
+TocItem = S("TocItem", fontName="Helvetica", fontSize=10.5, leading=22, textColor=INK)
 
 
-def rule(space_before=3, space_after=9):
-    t = Table([[""]], colWidths=[165 * mm], rowHeights=[0.5])
-    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.6, RULE),
+def hrule(width=165, thickness=0.6, color=RULE):
+    t = Table([[""]], colWidths=[width * mm], rowHeights=[0.5])
+    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), thickness, color),
                            ("TOPPADDING", (0, 0), (-1, -1), 0),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
-    return [Spacer(1, space_before), t, Spacer(1, space_after)]
+    return t
 
 
 def codeblock(lines):
@@ -57,13 +70,13 @@ def codeblock(lines):
     t = Table(rows, colWidths=[165 * mm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), CODEBG),
-        ("LEFTPADDING", (0, 0), (-1, -1), 9),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
         ("TOPPADDING", (0, 0), (-1, -1), 1.5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
         ("LINEBEFORE", (0, 0), (0, -1), 2, ACCENT),
     ]))
-    return [Spacer(1, 4), t, Spacer(1, 9)]
+    return [Spacer(1, 5), t, Spacer(1, 11)]
 
 
 def callout(title, text):
@@ -71,13 +84,13 @@ def callout(title, text):
     t = Table([[inner]], colWidths=[165 * mm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), BAND),
-        ("LEFTPADDING", (0, 0), (-1, -1), 11),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 11),
-        ("TOPPADDING", (0, 0), (-1, -1), 9),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
         ("LINEBEFORE", (0, 0), (0, -1), 2.5, ACCENT),
     ]))
-    return [Spacer(1, 5), t, Spacer(1, 10)]
+    return [Spacer(1, 6), t, Spacer(1, 11)]
 
 
 def datatable(header, rows, widths, aligns=None):
@@ -90,10 +103,10 @@ def datatable(header, rows, widths, aligns=None):
         ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
         ("LINEBELOW", (0, 1), (-1, -2), 0.35, RULE),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]
     if aligns:
         for col, a in aligns.items():
@@ -102,22 +115,54 @@ def datatable(header, rows, widths, aligns=None):
     return t
 
 
+SECTIONS = [
+    "What mining actually is",
+    "The 80-byte header",
+    "The fields, one at a time",
+    "The nonce is not enough: extranonce",
+    "Target, difficulty, and \u201cbelow the target\u201d",
+    "Endianness: the trap in Stage 2",
+    "Quick reference",
+]
+
+
+def heading(n):
+    return Paragraph("%d &nbsp;&nbsp; %s" % (n, SECTIONS[n - 1].replace("\u201c", "&ldquo;")
+                                             .replace("\u201d", "&rdquo;")), H1)
+
+
 story = []
 A = story.append
 E = story.extend
 
-A(Paragraph("Mining and the Block Header", TitleS))
-A(Paragraph("Rust Miner project &nbsp;&middot;&nbsp; Notes 01 &nbsp;&middot;&nbsp; 6 September 2026",
-            SubTitleS))
-E(rule(6, 12))
+# ---------------------------------------------------------------- cover
+A(Spacer(1, 62 * mm))
+A(Paragraph(TITLE, BigTitle))
+A(Spacer(1, 7))
+A(Paragraph("What the miner computes, and the exact 80 bytes it hashes", BigSub))
+A(Spacer(1, 16))
+A(hrule(70))
+A(Spacer(1, 16))
+A(Paragraph(SERIES, CoverMeta))
+A(Paragraph(DATE, CoverMeta))
+A(PageBreak())
 
+# ---------------------------------------------------------------- contents
+A(Paragraph("Contents", H1))
+A(hrule())
+A(Spacer(1, 12))
+for i, name in enumerate(SECTIONS, 1):
+    A(Paragraph("<font color='#b8621b'><b>%d</b></font> &nbsp;&nbsp; %s" %
+                (i, name.replace("\u201c", "&ldquo;").replace("\u201d", "&rdquo;")), TocItem))
+A(Spacer(1, 24))
 A(Paragraph(
     "These notes cover what mining actually computes, and the exact structure of the 80 bytes "
     "that get hashed. This is the reference for Stage 2 of the roadmap, where the toy "
     "string-plus-counter is replaced by a real Bitcoin block header.", Body))
+A(PageBreak())
 
-# 1
-A(Paragraph("1 &nbsp; What mining actually is", H1))
+# ---------------------------------------------------------------- 1
+A(heading(1))
 A(Paragraph(
     "Mining is guessing. A miner assembles a block, hashes its 80-byte header, and checks "
     "whether the resulting number is below a threshold called the <b>target</b>. It almost "
@@ -137,15 +182,22 @@ A(Paragraph(
     "That is the whole algorithm. Increment, hash, compare. Nothing is being solved and there "
     "is no partial progress: a miner that has guessed a trillion times is no closer than one "
     "that just started. Every guess is independent.", Body))
-
 E(callout("Why this is worth doing at all",
           "Hashing is hard to do and trivial to check. Producing a hash below the target costs "
           "real electricity; verifying someone else&rsquo;s claim costs one hash. That asymmetry "
           "is what converts electricity into un-forgeable votes, which is what stops an attacker "
           "from rewriting history. The rare hash is a receipt for energy burned."))
+A(Paragraph("What you win", H2))
+A(Paragraph(
+    "Not &ldquo;a bitcoin.&rdquo; You win the right to add <b>one block</b>, and that block pays "
+    "you the <b>block subsidy</b> plus every transaction fee inside it. The subsidy is currently "
+    "3.125 BTC and halves every 210,000 blocks &mdash; it was 50 BTC in 2009.", Body))
+A(Paragraph(
+    "One block arrives roughly every ten minutes across the whole network, not one coin.", Body))
+A(PageBreak())
 
-# 2
-A(Paragraph("2 &nbsp; The 80-byte header", H1))
+# ---------------------------------------------------------------- 2
+A(heading(2))
 A(Paragraph(
     "Six fields, always in this order, always exactly 80 bytes regardless of how many "
     "transactions the block contains.", Body))
@@ -155,7 +207,7 @@ varies = '<font color="#2c6e49"><b>Yes</b></font>'
 partly = '<font color="#6b6b6b">Barely</font>'
 indirect = '<font color="#2c6e49"><b>Indirectly</b></font>'
 
-hdr_table = datatable(
+A(datatable(
     ["#", "Field", "Size", "What it holds", "Miner<br/>varies?"],
     [
         ["1", Paragraph("<font face='Courier'>version</font>", CellB), "4",
@@ -174,12 +226,18 @@ hdr_table = datatable(
          "A meaningless counter that exists only to be changed.", Paragraph(varies, CellB)],
     ],
     widths=[8 * mm, 34 * mm, 14 * mm, 87 * mm, 22 * mm],
-    aligns={0: "CENTER", 2: "CENTER", 4: "CENTER"})
-A(KeepTogether([hdr_table, Spacer(1, 4),
-                Paragraph("4 + 32 + 32 + 4 + 4 + 4 = <b>80 bytes</b>", Small)]))
+    aligns={0: "CENTER", 2: "CENTER", 4: "CENTER"}))
+A(Spacer(1, 6))
+A(Paragraph("4 + 32 + 32 + 4 + 4 + 4 = <b>80 bytes</b>", Small))
+A(Spacer(1, 10))
+A(Paragraph(
+    "The header is the only thing hashed during mining. The transactions themselves are not &mdash; "
+    "they reach the header through the Merkle root, and nothing else about them enters the "
+    "proof-of-work computation.", Body))
+A(PageBreak())
 
-# 3
-A(Paragraph("3 &nbsp; The fields, one at a time", H1))
+# ---------------------------------------------------------------- 3
+A(heading(3))
 
 A(Paragraph("version &nbsp;(4 bytes)", H2))
 A(Paragraph(
@@ -210,6 +268,10 @@ A(Paragraph(
     "block&rsquo;s hash changes and its proof of work is destroyed.", Body))
 A(Paragraph(
     "<b>This is the field the miner varies indirectly</b>, and section 4 explains how.", Body))
+A(PageBreak())
+
+A(Paragraph("3 &nbsp;&nbsp; The fields, one at a time &nbsp;<font size=11 color='#6b6b6b'>"
+            "(continued)</font>", H1))
 
 A(Paragraph("timestamp &nbsp;(4 bytes)", H2))
 A(Paragraph(
@@ -235,9 +297,10 @@ A(Paragraph(
 A(Paragraph(
     "4 bytes gives 2<super>32</super> values, about 4.3 billion &mdash; which modern hardware "
     "exhausts in well under a second. That is the reason the extranonce exists.", Body))
+A(PageBreak())
 
-# 4
-A(Paragraph("4 &nbsp; The nonce is not enough: extranonce", H1))
+# ---------------------------------------------------------------- 4
+A(heading(4))
 A(Paragraph(
     "Once all 4.3 billion nonce values are used up without a win, the miner needs a fresh header. "
     "It gets one by changing the <b>coinbase transaction</b> &mdash; the special transaction the "
@@ -250,7 +313,7 @@ A(Paragraph(
     "Change one byte of it and the coinbase transaction&rsquo;s hash changes, so the Merkle root "
     "changes, so the header is entirely different &mdash; and 4.3 billion fresh nonces become "
     "available.", Body))
-
+A(Spacer(1, 4))
 A(datatable(
     ["Field", "Typical size", "Chosen by", "Purpose"],
     [
@@ -260,8 +323,7 @@ A(datatable(
          "The miner", "The miner&rsquo;s own outer counter."],
     ],
     widths=[30 * mm, 24 * mm, 22 * mm, 89 * mm]))
-A(Spacer(1, 8))
-
+A(Spacer(1, 12))
 A(Paragraph("The search is therefore nested:", Body))
 E(codeblock([
     "for extranonce in 0.. {          // EXPENSIVE",
@@ -281,9 +343,10 @@ A(Paragraph(
     "Combined, 2<super>32</super> nonces multiplied by roughly 2<super>64</super> extranonce "
     "values gives about 2<super>96</super> distinct headers &mdash; vastly more than will ever be "
     "needed.", Body))
+A(PageBreak())
 
-# 5
-A(Paragraph("5 &nbsp; Target, difficulty, and &ldquo;below the target&rdquo;", H1))
+# ---------------------------------------------------------------- 5
+A(heading(5))
 A(Paragraph(
     "A hash is a 256-bit integer. The target is a 256-bit integer. &ldquo;Below the target&rdquo; "
     "is a plain numeric comparison &mdash; nothing clever.", Body))
@@ -295,18 +358,29 @@ A(Paragraph(
     "Because a small 256-bit number written in fixed-width hex has zeros at the front, this shows "
     "up visually as &ldquo;the hash starts with many zeros.&rdquo; Same statement, easier to "
     "eyeball.", Body))
-
 E(callout("The retarget",
           "Every 2016 blocks, each node measures how long those blocks took and adjusts the "
           "target so the next 2016 average 10 minutes each. Faster than expected means hashpower "
           "joined, so the target drops. Nobody administers this &mdash; every node computes the "
           "same number from the same timestamps and independently reaches the same answer."))
+A(Paragraph("Two things people get wrong here", H2))
+A(Paragraph(
+    "<b>It tracks hashpower, not headcount.</b> One industrial farm outweighs ten thousand "
+    "hobbyists. The adjustment responds to total computation, and has no idea how many machines "
+    "produced it.", Body))
+A(Paragraph(
+    "<b>It is not continuous.</b> The target is frozen for the whole 2016-block window. If "
+    "hashpower doubles on day one of a window, blocks arrive every five minutes for two weeks "
+    "until the next adjustment corrects it. The ten-minute average holds over fortnights, not "
+    "moment to moment.", Body))
+A(PageBreak())
 
-# 6
-A(Paragraph("6 &nbsp; Endianness: the trap in Stage 2", H1))
+# ---------------------------------------------------------------- 6
+A(heading(6))
 A(Paragraph(
     "The single most common source of &ldquo;my hash does not match.&rdquo; Worth reading twice "
     "before writing the serializer.", Body))
+A(Spacer(1, 4))
 A(datatable(
     ["Field", "Stored in the header as", "Displayed by explorers as"],
     [
@@ -316,7 +390,7 @@ A(datatable(
          "Raw 32 bytes, internal order", "<b>Byte-reversed</b> from the stored order"],
     ],
     widths=[52 * mm, 55 * mm, 58 * mm]))
-A(Spacer(1, 8))
+A(Spacer(1, 12))
 A(Paragraph(
     "So a block hash printed as <font face='Courier'>0000...a3f1</font> on a block explorer is "
     "stored in the next block&rsquo;s header with its bytes in the opposite order. The leading "
@@ -324,9 +398,10 @@ A(Paragraph(
 A(Paragraph(
     "Expect to get this wrong three or four times. That is the stage working as intended &mdash; "
     "it is what makes the format physical rather than described.", Body))
+A(PageBreak())
 
-# 7
-A(Paragraph("7 &nbsp; Quick reference", H1))
+# ---------------------------------------------------------------- 7
+A(heading(7))
 A(datatable(
     ["Quantity", "Value"],
     [
@@ -341,22 +416,27 @@ A(datatable(
         ["Retarget interval", "2016 blocks, about two weeks"],
         ["Target block time", "10 minutes"],
         ["Max retarget step", "4x up or down, per adjustment"],
+        ["Block subsidy now", "3.125 BTC, plus all fees in the block"],
+        ["Halving interval", "210,000 blocks, about four years"],
         ["Timestamp rules", "&gt; median of previous 11 blocks; &lt; network time + 2 hours"],
     ],
     widths=[46 * mm, 119 * mm]))
-
-A(Spacer(1, 14))
-E(rule(0, 6))
+A(Spacer(1, 18))
+A(hrule())
+A(Spacer(1, 8))
 A(Paragraph(
     "Next: Stage 1 builds the grinding loop against a toy target. Stage 2 replaces the toy input "
     "with the real 80 bytes described above.", Small))
 
 
 def decorate(canv, doc):
+    """Footer on every page except the cover."""
+    if doc.page == 1:
+        return
     canv.saveState()
     canv.setFont("Helvetica", 7.5)
     canv.setFillColor(MUTED)
-    canv.drawString(22 * mm, 13 * mm, "Rust Miner  \u00b7  Notes 01")
+    canv.drawString(22 * mm, 13 * mm, SERIES)
     canv.drawRightString(A4[0] - 22 * mm, 13 * mm, "%d" % doc.page)
     canv.setStrokeColor(RULE)
     canv.setLineWidth(0.5)
@@ -366,9 +446,9 @@ def decorate(canv, doc):
 
 doc = BaseDocTemplate(OUT, pagesize=A4,
                       leftMargin=22 * mm, rightMargin=22 * mm,
-                      topMargin=20 * mm, bottomMargin=22 * mm,
-                      title="Mining and the Block Header",
-                      author="Soroush", subject="Rust Miner project notes")
+                      topMargin=24 * mm, bottomMargin=24 * mm,
+                      title=TITLE, author="Soroush",
+                      subject="Rust Miner project notes")
 frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
 doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=decorate)])
 doc.build(story)

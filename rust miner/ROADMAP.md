@@ -65,14 +65,42 @@ optimising, found that; guessing would not have.
 iteration. Stage 2 deletes it for free — a real header is a fixed 80-byte array with the
 nonce written as raw bytes, so no text is ever built.
 
-### Stage 2 — Real block header
+### Stage 2 — Real block header ✅ done 2026-09-08
 Serialize the actual 80 bytes: version, prev hash, Merkle root, timestamp, nBits, nonce.
 Decode `nBits` into a 256-bit target. Double-SHA256.
 
-*Teaches:* structs, `Result` and `?`, error handling, and the endianness fight. Expect
-to get the byte order wrong three or four times — that is the stage working correctly.
+*Taught:* `struct` and `impl`, methods and `&self`, fixed-size arrays `[u8; 32]`,
+slice ranges and `copy_from_slice`, `to_le_bytes` / `to_be_bytes`, tail-expression
+returns, `#[cfg(test)]` modules and `assert_eq!`.
 
-*Milestone:* compute a known block's hash and match it exactly.
+*Milestone hit:* block **125552** reproduced exactly — 80-byte header byte-for-byte,
+hash `00000000000000001e8d6829a8a21adc5d38d0a473b144b6765798e61f98bd1d`, locked in
+as a test.
+
+*The endianness fight, resolved into three separate rules:*
+
+1. **Integer fields** are little-endian on the wire — `to_le_bytes()`. Arbitrary;
+   Satoshi picked it because x86 is LE. Matters only because everyone must agree,
+   or the hashes differ and consensus breaks.
+2. **Hash fields have no endianness.** They are 32-byte strings, copied as-is.
+   The reversal people talk about is a *display* convention — explorers print
+   hashes backwards. So `unhex32` reverses on the way in, `block_hash` reverses
+   on the way out.
+3. **The target is big-endian**, because it is a numeral being laid out
+   most-significant-byte-first. Different job from serialization.
+
+*Deferred:* `unhex32` still `.unwrap()`s. `Result` and `?` — listed as a stage 2
+teaching goal — were not covered and are still owed.
+
+*The one line that is proof-of-work:*
+
+```rust
+fn meets_target(&self) -> bool {
+    self.block_hash() < self.target()
+}
+```
+
+Everything in stage 3 is trying nonces until that returns `true`.
 
 ### Stage 3 — Parallelize
 Split the nonce range across cores with `rayon`.

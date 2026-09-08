@@ -1,20 +1,19 @@
 # Rust Bitcoin Miner — Roadmap
 
-A tiny solar-powered lottery miner on an ESP32, written from scratch in Rust.
+A Bitcoin miner written from scratch in Rust, built to learn the language and the protocol.
 
 ## Goals
 
 1. **Learn Rust properly** — this is the primary goal.
 2. **Learn Bitcoin's real data structures** by building them, not reading about them.
-3. **End with a physical gadget** that runs real mining code on a desk.
 
 ## Non-goals
 
-- **Profit.** Settled with arithmetic on 2026-09-05. An ESP32 earns ~1e-11 BTC/year;
-  odds of a block are ~1 in 240 billion per year. Self-generated solar makes it worse,
-  not better, because any kWh with a buyer is worth more sold than mined. The gadget is
-  a $20 lottery ticket. That is the whole point and it is a fine point.
+- **Profit.** Settled with arithmetic on 2026-09-05. At any hashrate reachable here the
+  expected return is indistinguishable from zero, and mining is only economic on
+  stranded energy at industrial scale. This is a learning artifact, not a business.
 - Anything requiring a mainnet pool account, payouts, or moving money.
+- **Hardware.** Everything runs on the laptop. No devices to buy.
 
 ## Two tracks, running in parallel
 
@@ -32,21 +31,39 @@ by immersion and leaves holes; rustlings covers the corners.
 
 Each stage ends with something that runs. Stop and commit at each one.
 
-### Stage 0 — Toolchain
-Install `rustup`, create the cargo project, get `cargo build` working.
+### Stage 0 — Toolchain ✅ done 2026-09-06
+Rust 1.98.1 on the **GNU** host toolchain (no MSVC / Visual Studio needed — saves a 2–4 GB
+download). Cargo project created, `sha2` added, double-SHA256 verified against Python.
 
-**Known blocker:** `static.rust-lang.org` and `crates.io` are behind CDNs that are
-unreliable from Iranian IPs. Solve this first — configure a crates.io mirror in
-`.cargo/config.toml` if needed. Do not discover this mid-build.
+*Anticipated blocker that did not materialise:* `static.rust-lang.org` and `crates.io` were
+both fast and reachable. If that changes, configure a crates.io mirror in
+`.cargo/config.toml`.
 
-### Stage 1 — Toy miner
-Grind arbitrary bytes against a "N leading zero bits" rule. ~50 lines.
+*Gotcha worth remembering:* PATH changes don't reach an already-running VS Code. Restart it,
+or `$env:Path += ";$env:USERPROFILE\.cargo\bin"` for the current terminal.
 
-*Teaches:* cargo, ownership basics, slices, `[u8; 32]`, iterators, a hashing crate,
-CLI args. No Bitcoin structure yet — all difficulty is Rust.
+### Stage 1 — Toy miner ✅ done 2026-09-08
+Grind `"soroush" + nonce` until the hash has N leading zero bytes. ~30 lines.
 
-*Milestone:* watch it find a hash. Compare its speed to the Python version (~500 KH/s
-vs 2–5 MH/s). This is where Rust justifies itself.
+*Taught:* `let` and immutability, `mut`, `format!` vs `println!`, macros vs functions,
+ranges, `&str` vs `String`, references, `const`, casts with `as`, `Instant` timing,
+byte indexing.
+
+*Results — same algorithm throughout, 10,000,000 hashes each:*
+
+| Version | Hashrate | vs start |
+|---|---|---|
+| debug, hex-string compare | 51,840/s | 1× |
+| release, hex-string compare | 288,457/s | 5.6× |
+| release, byte compare | 1,183,721/s | **22.8×** |
+
+*The real lesson:* the bottleneck was never SHA-256. `hex()` called `format!` once per byte
+— 33 heap allocations per iteration, ~340 million total. Measuring first, and only then
+optimising, found that; guessing would not have.
+
+*Left deliberately unoptimised:* `format!("soroush{nonce}")` still allocates once per
+iteration. Stage 2 deletes it for free — a real header is a fixed 80-byte array with the
+nonce written as raw bytes, so no text is ever built.
 
 ### Stage 2 — Real block header
 Serialize the actual 80 bytes: version, prev hash, Merkle root, timestamp, nBits, nonce.
@@ -90,17 +107,6 @@ Connect to a mainnet solo pool. Real work units, real share submission.
 *Caveat:* many pools geo-block Iranian IPs. Expect to test several. Skippable —
 stage 5 already gave you the protocol experience without the friction.
 
-### Stage 7 — The gadget
-Port the core to ESP32 (`esp-hal`, `no_std`), using the chip's hardware SHA-256
-accelerator (~78 KH/s). Add an OLED showing hashrate and uptime. Solo-mine to your own
-address. Run it off a small solar panel — 1.5W, so a $10 panel is plenty.
-
-*Teaches:* embedded Rust. **Biggest difficulty spike in the project** — `no_std`, HAL,
-flashing, debugging without a debugger. Do not attempt before stage 3.
-
-*Optional easier step first:* run stages 1–5 on a Raspberry Pi. Ordinary Linux, normal
-Rust, no cross-compilation.
-
 ---
 
 ## After
@@ -111,11 +117,3 @@ Two directions, both from the 2026-09-04 session:
   (the other concept never covered).
 - **Postgres indexer** — plays to the ERP/data background. Async, DB-driven,
   network-bound; a good *third* project, a bad first one.
-
-## Hardware
-
-| Item | Cost | Needed at |
-|---|---|---|
-| Nothing — laptop only | $0 | Stages 0–6 |
-| ESP32 + display (LilyGO T-Display S3 or similar) | $15–25 | Stage 7 |
-| Small solar panel + battery | ~$10–20 | Stage 7, optional |

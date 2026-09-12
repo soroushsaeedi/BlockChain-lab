@@ -65,54 +65,45 @@ fn unhex32(s: &str) -> [u8; 32] {
     out
 }
 
-const ATTEMPTS: u64 = 10_000_000;
-
 fn main() {
-    const ZERO_BYTES: usize = 4;
-    let mut found = false;
-    let start = Instant::now();
-    let h = BlockHeader {
+    let mut h = BlockHeader {
         version: 1,
         prev_hash: unhex32("00000000000008a3a41b85b8b29ad444def299fee21793cd8b9e567eab02cd81"),
         merkle_root: unhex32("2b12fcf1b09288fcaff797d71e950e71ae42b91e8bdb2304758dfcffc2b620e3"),
         timestamp: 1305998791,
-        nbits: 0x1a44b9f2,
-        nonce: 2504433986,
+        nbits: 0x1e001fff,
+        nonce: 0,
     };
-    println!("header: {}", hex(&h.serialize()));
-    println!("hash:   {}", hex(&h.block_hash()));
+
     println!("target: {}", hex(&h.target()));
-    println!("valid:  {}", h.meets_target());
 
-    for nonce in 0..ATTEMPTS {
+    let start = Instant::now();
+    let mut found = None;
 
-        let input = format!("soroush{nonce}");
-        let digest = Sha256::digest(Sha256::digest(input.as_bytes()));
-
-        if digest[0] == 0 && digest[1] == 0 && digest[2] == 0 && digest[3] == 0 {
-            println!("found it!");
-            println!(" nonce = {nonce}");
-            println!(" hash = {}", hex(&digest));
-            found = true;
+    for nonce in 0..=u32::MAX {
+        h.nonce = nonce;
+        if h.meets_target() {
+            found = Some(nonce);
             break;
         }
     }
 
     let elapsed = start.elapsed();
 
-    if !found {
-        println!("gave up after {ATTEMPTS} attempts ({ZERO_BYTES} zero bytes)");
+    match found {
+        Some(nonce) => {
+            let hashes = nonce as f64 + 1.0;
+            println!("found nonce: {nonce}");
+            println!("hash:        {}", hex(&h.block_hash()));
+            println!("elapsed:     {elapsed:.2?}");
+            println!("hashrate:    {:.0} hashes/sec", hashes / elapsed.as_secs_f64());
+        }
+        None => println!("exhausted the nonce space in {elapsed:.2?}"),
     }
-
-    println!("elapsed: {elapsed:.2?}");
-    println!("hashrate: {:.0} hashes/sec", ATTEMPTS as f64 / elapsed.as_secs_f64());
-
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn block_125552_hash_matches() {
         let h = BlockHeader {

@@ -51,6 +51,17 @@ impl BlockHeader {
     fn meets_target(&self) -> bool {
         self.block_hash() < self.target()
     }
+
+    fn parse(bytes: &[u8]) -> Result<BlockHeader, ParseError> {
+        Ok(BlockHeader {
+            version: read_u32_le(bytes, 0)?,
+            prev_hash: read_hash(bytes, 4)?,
+            merkle_root: read_hash(bytes, 36)?,
+            timestamp: read_u32_le(bytes, 68)?,
+            nbits: read_u32_le(bytes, 72)?,
+            nonce: read_u32_le(bytes, 76)?,
+        })
+    }
 }
 
 /// Render bytes as lowercase hex.
@@ -66,6 +77,49 @@ fn unhex32(s: &str) -> [u8; 32] {
         out[31 - i] = u8::from_str_radix(pair, 16).unwrap();
     }
     out
+}
+
+#[derive(Debug, PartialEq)]
+enum ParseError {
+    UnexpectedEnd,
+}
+
+fn read_u32_le(bytes: &[u8], at: usize) -> Result<u32, ParseError> {
+    match bytes.get(at..at + 4) {
+        Some(slice) => Ok(u32::from_le_bytes(slice.try_into().unwrap())),
+        None => Err(ParseError::UnexpectedEnd),
+    }
+}
+
+fn read_u16_le(bytes: &[u8], at: usize) -> Result<u16, ParseError> {
+    match bytes.get(at..at + 2) {
+        Some(slice) => Ok(u16::from_le_bytes(slice.try_into().unwrap())),
+        None => Err(ParseError::UnexpectedEnd),
+    }
+}
+
+fn read_u64_le(bytes: &[u8], at: usize) -> Result<u64, ParseError> {
+    match bytes.get(at..at + 8) {
+        Some(slice) => Ok(u64::from_le_bytes(slice.try_into().unwrap())),
+        None => Err(ParseError::UnexpectedEnd),
+    }
+}
+
+fn read_varint(bytes: &[u8], at: usize) -> Result<(u64, usize), ParseError> {
+    let first = *bytes.get(at).ok_or(ParseError::UnexpectedEnd)?;
+    match first {
+        0xfd => Ok((read_u16_le(bytes, at + 1)? as u64, 3)),
+        0xfe => Ok((read_u32_le(bytes, at + 1)? as u64, 5)),
+        0xff => Ok((read_u64_le(bytes, at + 1)?, 9)),
+        n => Ok((n as u64, 1)),
+    }
+}
+
+fn read_hash(bytes: &[u8], at: usize) -> Result<[u8; 32], ParseError> {
+    match bytes.get(at..at + 32) {
+        Some(slice) => Ok(slice.try_into().unwrap()),
+        None => Err(ParseError::UnexpectedEnd),
+    }
 }
 
 fn main() {
@@ -143,6 +197,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_version_from_raw_block() {
+        let bytes = include_bytes!("../block125552.bin");
+        let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn read_u32_past_end_is_error() {
+        let bytes = include_bytes!("../block125552.bin");
+        assert_eq!(read_u32_le(bytes, 1494), Err(ParseError::UnexpectedEnd));
+        assert_eq!(read_u32_le(bytes, 1492), Ok(0));
+    }
+
+    #[test]
     fn block_1_hash_matches() {
         let h = BlockHeader {
             version: 1,
@@ -163,5 +231,22 @@ mod tests {
             "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048"
         );
         assert!(h.meets_target());
+    }
+
+    #[test]
+    fn parse_header_from_raw_block() {
+        let bytes = include_bytes!("../block125552.bin");
+        let h = BlockHeader::parse(bytes).unwrap();
+        assert_eq!(
+            hex(&h.block_hash()),
+            "00000000000000001e8d6829a8a21adc5d38d0a473b144b6765798e61f98bd1d"
+        )
+    }
+
+    #[test]
+    fn varint_reads() {
+        let bytes = include_bytes!("../block125552.bin");
+        assert_eq!(read_varint(bytes, 80), Ok((4, 1)));
+        assert_eq!(read_varint(&[0xfd, 0x2c, 0x01], 0), Ok((300, 3)));
     }
 }

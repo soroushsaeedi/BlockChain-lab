@@ -69,6 +69,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn double_sha256(data: &[u8]) -> [u8; 32] {
+    let digest = Sha256::digest(Sha256::digest(data));
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 /// Parse 64 hex chars into 32 bytes, reversing byte order.
 fn unhex32(s: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -82,6 +89,10 @@ fn unhex32(s: &str) -> [u8; 32] {
 #[derive(Debug, PartialEq)]
 enum ParseError {
     UnexpectedEnd,
+    TrailingBytes,
+    NoTransactions,
+    InsufficientWork,
+    MerkleMismatch,
 }
 
 fn read_u32_le(bytes: &[u8], at: usize) -> Result<u32, ParseError> {
@@ -120,6 +131,86 @@ fn read_hash(bytes: &[u8], at: usize) -> Result<[u8; 32], ParseError> {
         Some(slice) => Ok(slice.try_into().unwrap()),
         None => Err(ParseError::UnexpectedEnd),
     }
+}
+
+fn tx_length(bytes: &[u8], start: usize) -> Result<usize, ParseError> {
+    let mut at = start;
+    at += 4; // version
+
+    let (n_inputs, len) = read_varint(bytes, at)?;
+    at += len;
+    for _ in 0..n_inputs {
+        at += 32 + 4; // previous txid + previous index
+        let (script_len, len) = read_varint(bytes, at)?;
+        at += len;
+        at += script_len as usize; // skip the script
+        at += 4; // sequence
+    }
+
+    let (n_outputs, len) = read_varint(bytes, at)?;
+    at += len;
+    for _ in 0..n_outputs {
+        at += 8; // value
+        let (script_len, len) = read_varint(bytes, at)?;
+        at += len;
+        at += script_len as usize; // skip the script
+    }
+
+    at += 4; // locktime
+    if at > bytes.len() {
+        return Err(ParseError::UnexpectedEnd);
+    }
+    Ok(at - start)
+}
+
+/// Split a raw block into its transactions, each a slice of the original bytes.
+fn split_transactions(bytes: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
+    let (count, len) = read_varint(bytes, 80)?;
+    let mut at = 80 + len;
+    let mut txs = Vec::new();
+    for _ in 0..count {
+        let tx_len = tx_length(bytes, at)?;
+        txs.push(&bytes[at..at + tx_len]);
+        at += tx_len;
+    }
+    if at != bytes.len() {
+        return Err(ParseError::TrailingBytes);
+    }
+    Ok(txs)
+}
+
+fn merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
+    let mut level: Vec<[u8; 32]> = txids.to_vec();
+    while level.len() > 1 {
+        if level.len() % 2 == 1 {
+            level.push(*level.last().unwrap()); // odd: duplicate the last
+        }
+        let mut next = Vec::new();
+        for pair in level.chunks(2) {
+            let mut joined = [0u8; 64];
+            joined[..32].copy_from_slice(&pair[0]);
+            joined[32..].copy_from_slice(&pair[1]);
+            next.push(double_sha256(&joined));
+        }
+        level = next;
+    }
+    level[0]
+}
+
+fn verify_block(bytes: &[u8]) -> Result<(), ParseError> {
+    let header = BlockHeader::parse(bytes)?;
+    if !header.meets_target() {
+        return Err(ParseError::InsufficientWork);
+    }
+    let txs = split_transactions(bytes)?;
+    if txs.is_empty() {
+        return Err(ParseError::NoTransactions);
+    }
+    let txids: Vec<[u8; 32]> = txs.iter().map(|tx| double_sha256(tx)).collect();
+    if merkle_root(&txids) != header.merkle_root {
+        return Err(ParseError::MerkleMismatch);
+    }
+    Ok(())
 }
 
 fn main() {
@@ -248,5 +339,58 @@ mod tests {
         let bytes = include_bytes!("../block125552.bin");
         assert_eq!(read_varint(bytes, 80), Ok((4, 1)));
         assert_eq!(read_varint(&[0xfd, 0x2c, 0x01], 0), Ok((300, 3)));
+    }
+
+    #[test]
+    fn coinbase_length() {
+        let bytes = include_bytes!("../block125552.bin");
+        assert_eq!(tx_length(bytes, 81), Ok(135));
+    }
+
+    #[test]
+    fn split_block_into_transactions() {
+        let bytes = include_bytes!("../block125552.bin");
+        let txs = split_transactions(bytes).unwrap();
+        assert_eq!(txs.len(), 4);
+        assert_eq!(txs[0].len(), 135);
+        let total: usize = txs.iter().map(|tx| tx.len()).sum();
+        assert_eq!(80 + 1 + total, 1496);
+    }
+
+    #[test]
+    fn coinbase_txid() {
+        let bytes = include_bytes!("../block125552.bin");
+        let txs = split_transactions(bytes).unwrap();
+        let mut id = double_sha256(txs[0]);
+        id.reverse(); // display order
+        assert_eq!(
+            hex(&id),
+            "51d37bdd871c9e1f4d5541be67a6ab625e32028744d7d4609d0c37747b40cd2d"
+        );
+    }
+
+    #[test]
+    fn merkle_root_matches_header() {
+        let bytes = include_bytes!("../block125552.bin");
+        let header = BlockHeader::parse(bytes).unwrap();
+        let txids: Vec<[u8; 32]> = split_transactions(bytes)
+            .unwrap()
+            .iter()
+            .map(|tx| double_sha256(tx))
+            .collect();
+        assert_eq!(merkle_root(&txids), header.merkle_root);
+    }
+
+    #[test]
+    fn real_block_verifies() {
+        let bytes = include_bytes!("../block125552.bin");
+        assert_eq!(verify_block(bytes), Ok(()));
+    }
+
+    #[test]
+    fn tampered_transaction_is_caught() {
+        let mut bytes = include_bytes!("../block125552.bin").to_vec();
+        bytes[136] ^= 0x01; // coinbase value 0x40 -> 0x41: one extra satoshi
+        assert_eq!(verify_block(&bytes), Err(ParseError::MerkleMismatch));
     }
 }

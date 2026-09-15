@@ -1,7 +1,16 @@
-use sha2::{Digest, Sha256};
-use std::time::Instant;
+mod rpc;
+
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU64, Ordering};
+use rpc::Rpc;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::error::Error;
+use std::time::Instant;
+
+const RPC_ADDR: &str = "127.0.0.1:18443";
+/// Override with the BITCOIN_COOKIE environment variable.
+const COOKIE_PATH: &str =
+    r"E:\Personal Project\BlockChain Network\Tools\regset-data\regtest\.cookie";
 
 #[derive(Clone, Copy)]
 struct BlockHeader {
@@ -163,7 +172,6 @@ fn tx_length(bytes: &[u8], start: usize) -> Result<usize, ParseError> {
     Ok(at - start)
 }
 
-/// Split a raw block into its transactions, each a slice of the original bytes.
 fn split_transactions(bytes: &[u8]) -> Result<Vec<&[u8]>, ParseError> {
     let (count, len) = read_varint(bytes, 80)?;
     let mut at = 80 + len;
@@ -213,54 +221,172 @@ fn verify_block(bytes: &[u8]) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn main() {
-    let mut h = BlockHeader {
-        version: 1,
-        prev_hash: unhex32("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"),
-        merkle_root: unhex32("0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"),
-        timestamp: 1231469665,
-        nbits: 0x1d00ffff,
-        nonce: 0,
-    };
+fn height_push(height: u32) -> Vec<u8> {
+    if (1..=16).contains(&height) {
+        return vec![0x50 + height as u8];
+    }
+    let mut num = Vec::new();
+    let mut h = height;
+    while h > 0 {
+        num.push((h & 0xff) as u8); // little-endian, lowest byte first
+        h >>= 8;
+    }
+    if num.last().map_or(false, |&b| b & 0x80 != 0) {
+        num.push(0); // top bit set would mean negative; add a zero byte
+    }
+    let mut out = vec![num.len() as u8]; // "push N bytes"
+    out.extend_from_slice(&num);
+    out
+}
 
-    println!("target: {}", hex(&h.target()));
+fn build_coinbase(height: u32, value: u64) -> Vec<u8> {
+    let mut script = height_push(height);
+    let tag = b"soroush";
+    script.push(tag.len() as u8); // push 7 bytes
+    script.extend_from_slice(tag);
 
-    let hashes = AtomicU64::new(0);
-    let start = Instant::now();
-    let found = (0..=u32::MAX).into_par_iter().find_any(|&nonce| {
-        hashes.fetch_add(1, Ordering::Relaxed);
-        let mut candidate = h;
-        candidate.nonce = nonce;
-        candidate.meets_target()
-    });
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&1u32.to_le_bytes()); // version
+    tx.push(1); // input count
+    tx.extend_from_slice(&[0u8; 32]); // prev txid: none
+    tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // prev index: none
+    tx.push(script.len() as u8); // script length
+    tx.extend_from_slice(&script);
+    tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // sequence
+    tx.push(1); // output count
+    tx.extend_from_slice(&value.to_le_bytes()); // value
+    tx.push(1); // script length
+    tx.push(0x51); // OP_TRUE
+    tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
+    tx
+}
 
-    let elapsed = start.elapsed();
-    let total = hashes.load(Ordering::Relaxed);
-
-    match found {
-        Some(nonce) => {
-            h.nonce = nonce;
-            println!("found nonce: {nonce}");
-            println!("hashes:      {total}");
-            println!("hash:        {}", hex(&h.block_hash()));
-            println!("header:      {}", hex(&h.serialize()));
-            println!("hashrate:    {:.0} hashes/sec", total as f64 / elapsed.as_secs_f64());
-            println!("elapsed:     {elapsed:.2?}");
+/// Append `n` as a CompactSize varint — the inverse of `read_varint`.
+fn write_varint(out: &mut Vec<u8>, n: u64) {
+    match n {
+        0..=0xfc => out.push(n as u8),
+        0xfd..=0xffff => {
+            out.push(0xfd);
+            out.extend_from_slice(&(n as u16).to_le_bytes());
         }
-        None => println!("exhausted the nonce space in {elapsed:.2?}"),
+        0x1_0000..=0xffff_ffff => {
+            out.push(0xfe);
+            out.extend_from_slice(&(n as u32).to_le_bytes());
+        }
+        _ => {
+            out.push(0xff);
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+    }
+}
+
+/// Assemble a full block: 80-byte header, tx count, transactions.
+fn serialize_block(header: &BlockHeader, txs: &[Vec<u8>]) -> Vec<u8> {
+    let mut block = Vec::new();
+    block.extend_from_slice(&header.serialize());
+    write_varint(&mut block, txs.len() as u64);
+    for tx in txs {
+        block.extend_from_slice(tx);
+    }
+    block
+}
+
+/// The parts of a `getblocktemplate` reply this miner uses.
+struct Template {
+    version: u32,
+    prev_hash: [u8; 32],
+    timestamp: u32,
+    nbits: u32,
+    height: u32,
+    /// Reward the coinbase may claim. The template's transactions are left
+    /// out (empty blocks), so their fees are subtracted: claiming fees for
+    /// transactions not in the block is rejected as `bad-cb-amount`.
+    reward: u64,
+}
+
+fn fetch_template(rpc: &Rpc) -> Result<Template, Box<dyn Error>> {
+    let t = rpc.call("getblocktemplate", json!([{"rules": ["segwit"]}]))?;
+    let field = |name: &str| t[name].as_u64().ok_or(format!("template: missing {name}"));
+
+    let prev = t["previousblockhash"].as_str().ok_or("template: missing previousblockhash")?;
+    if prev.len() != 64 {
+        return Err("template: previousblockhash is not 64 hex chars".into());
+    }
+    let bits = t["bits"].as_str().ok_or("template: missing bits")?;
+    let fees: u64 = t["transactions"]
+        .as_array()
+        .ok_or("template: missing transactions")?
+        .iter()
+        .map(|tx| tx["fee"].as_u64().unwrap_or(0))
+        .sum();
+
+    Ok(Template {
+        version: field("version")? as u32,
+        prev_hash: unhex32(prev), // display order -> internal order
+        timestamp: field("curtime")? as u32,
+        nbits: u32::from_str_radix(bits, 16)?,
+        height: field("height")? as u32,
+        reward: field("coinbasevalue")? - fees,
+    })
+}
+
+/// Search the whole nonce range in parallel for a header meeting its target.
+fn mine(header: BlockHeader) -> Option<BlockHeader> {
+    (0..=u32::MAX)
+        .into_par_iter()
+        .map(|nonce| BlockHeader { nonce, ..header })
+        .find_any(|candidate| candidate.meets_target())
+}
+
+/// Usage: `cargo run -- [blocks]` — fetch work, mine, submit, repeat.
+fn main() -> Result<(), Box<dyn Error>> {
+    let blocks: u32 = match std::env::args().nth(1) {
+        Some(arg) => arg.parse()?,
+        None => 1,
+    };
+    let cookie = std::env::var("BITCOIN_COOKIE").unwrap_or(COOKIE_PATH.to_string());
+    let rpc = Rpc::new(RPC_ADDR, &cookie);
+
+    for _ in 0..blocks {
+        let t = fetch_template(&rpc)?;
+        let coinbase = build_coinbase(t.height, t.reward);
+        let header = BlockHeader {
+            version: t.version,
+            prev_hash: t.prev_hash,
+            merkle_root: merkle_root(&[double_sha256(&coinbase)]),
+            timestamp: t.timestamp,
+            nbits: t.nbits,
+            nonce: 0,
+        };
+
+        let start = Instant::now();
+        let header = mine(header).ok_or("nonce space exhausted (would need an extranonce)")?;
+        let elapsed = start.elapsed();
+
+        // Check our own work with the stage 4 verifier before the node sees it.
+        let block = serialize_block(&header, &[coinbase]);
+        if let Err(e) = verify_block(&block) {
+            return Err(format!("built an invalid block: {e:?}").into());
+        }
+
+        // submitblock returns null on success, or a short rejection reason.
+        let result = rpc.call("submitblock", json!([hex(&block)]))?;
+        match result.as_str() {
+            None => println!(
+                "height {:>4}  nonce {:>10}  {}  accepted ({elapsed:.2?})",
+                t.height,
+                header.nonce,
+                hex(&header.block_hash())
+            ),
+            Some(reason) => {
+                return Err(format!("height {}: node rejected block: {reason}", t.height).into());
+            }
+        }
     }
 
-    let bench_h = BlockHeader { nbits: 0x03000001, ..h };
-    let n: u32 = 100_000_000;
-    let t = Instant::now();
-    let hits = (0..n).into_par_iter().filter(|&nonce| {
-        let mut c = bench_h;
-        c.nonce = nonce;
-        c.meets_target()
-    }).count();
-    let e = t.elapsed();
-    println!("bench: {hits} hits, {:.0} hashes/sec", n as f64 / e.as_secs_f64());
-
+    let count = rpc.call("getblockcount", json!([]))?;
+    println!("node's chain height: {count}");
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
@@ -392,5 +518,46 @@ mod tests {
         let mut bytes = include_bytes!("../block125552.bin").to_vec();
         bytes[136] ^= 0x01; // coinbase value 0x40 -> 0x41: one extra satoshi
         assert_eq!(verify_block(&bytes), Err(ParseError::MerkleMismatch));
+    }
+
+    #[test]
+    fn height_encoding() {
+        assert_eq!(height_push(1), vec![0x51]);
+        assert_eq!(height_push(17), vec![0x01, 0x11]);
+        assert_eq!(height_push(128), vec![0x02, 0x80, 0x00]);
+        assert_eq!(height_push(255), vec![0x02, 0xff, 0x00]);
+        assert_eq!(height_push(300), vec![0x02, 0x2c, 0x01]);
+    }
+
+    #[test]
+    fn coinbase_parses_back() {
+        let tx = build_coinbase(1, 5_000_000_000);
+        assert_eq!(tx.len(), 70);
+        assert_eq!(tx_length(&tx, 0), Ok(70));
+    }
+
+    #[test]
+    fn varint_round_trips() {
+        for n in [0, 0xfc, 0xfd, 0xffff, 0x1_0000, 0xffff_ffff, 0x1_0000_0000] {
+            let mut buf = Vec::new();
+            write_varint(&mut buf, n);
+            assert_eq!(read_varint(&buf, 0), Ok((n, buf.len())));
+        }
+    }
+
+    #[test]
+    fn mined_regtest_block_verifies() {
+        let coinbase = build_coinbase(1, 5_000_000_000);
+        let header = BlockHeader {
+            version: 0x2000_0000,
+            prev_hash: unhex32("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"),
+            merkle_root: merkle_root(&[double_sha256(&coinbase)]),
+            timestamp: 1789457083,
+            nbits: 0x207fffff,
+            nonce: 0,
+        };
+        let header = mine(header).unwrap();
+        let block = serialize_block(&header, &[coinbase]);
+        assert_eq!(verify_block(&block), Ok(()));
     }
 }
